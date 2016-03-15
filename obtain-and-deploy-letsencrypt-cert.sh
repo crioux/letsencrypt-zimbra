@@ -1,6 +1,7 @@
 #!/bin/bash
 # author: Vojtech Myslivec <vojtech@xmyslivec.cz>
 # GPLv2 licence
+set -o nounset
 
 SCRIPTNAME=${0##*/}
 
@@ -8,19 +9,18 @@ USAGE="USAGE
     $SCRIPTNAME -h | --help | help
     $SCRIPTNAME
 
-    This script is used for extend the already-deployed gitlab
-    nginx certificate issued by Let's Encrypt certification
-    authority.
+    This script is used for extend the already-deployed apache2
+    certificate issued by Let's Encrypt certification authority.
 
-    The script will stop gitlab' services for a while and restart
-    them once the certificate is extended and deployed. If the
-    obtained certificate isn't valid after all, gitlab will start
+    The script will stop the apache for a while and restart it
+    once the certificate is extended and deployed. If the
+    obtained certificate isn't valid after all, apache2 will start
     with the old certificate unchanged.
 
     Suitable to be run via cron.
 
     Depends on:
-        gitlab
+        apache2
         letsencrypt-auto utility
         openssl"
 
@@ -36,20 +36,21 @@ letsencript_issued_cert_file="0000_cert.pem"
 # intermediate CA
 letsencript_issued_intermediate_CA_file="0000_chain.pem"
 # root CA
-root_CA_file="/opt/letsencrypt-gitlab/DSTRootCAX3.pem"
+root_CA_file="/opt/letsencrypt-apache/DSTRootCAX3.pem"
 
-# gitlab controller
-gitlab_ctl="gitlab-ctl"
-# gitlab' services controller -- to start/stop nginx
-gitlab_sv_ctl="/opt/gitlab/embedded/bin/sv"
+# apache init script / service name
+apache_service="apache2"
 
 # this is the server certificate with CA together -- alias chain
 ssl_dir="/etc/ssl/private"
-gitlab_cert="${ssl_dir}/chain_rsa_vyvoj.meteocentrum.cz.pem"
-gitlab_key="${ssl_dir}/key_rsa_vyvoj.meteocentrum.cz.pem"
+ apache_cert="${ssl_dir}/cert_rsa_vyvoj.meteocentrum.cz.pem"
+apache_chain="${ssl_dir}/chain_rsa_vyvoj.meteocentrum.cz.pem"
+  apache_key="${ssl_dir}/key_rsa_vyvoj.meteocentrum.cz.pem"
 
 # common name in the certificate
-CN="vyvoj.meteocentrum.cz"
+CN1="example.com"
+CN2="www.example.com"
+CN3="dev.example.com"
 # subject in request -- does not matter for letsencrypt but must be there for openssl
 cert_subject="/"
 # openssl config skeleton
@@ -67,7 +68,9 @@ keyUsage = nonRepudiation, digitalSignature, keyEncipherment
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = $CN
+DNS.1 = $CN1
+DNS.2 = $CN2
+DNS.3 = $CN3
 "
 
 # --------------------------------------------------------------------
@@ -108,32 +111,42 @@ cleanup() {
     }
 }
 
-# just a kindly message how to fix stopped nginx
-fix_nginx_message() {
+# just a kindly message how to fix stopped apache
+fix_apache_message() {
     echo "        You must probably fix it with:
-        '${gitlab_ctl} restart' or '${gitlab_ctl} reconfigure'
-        commands or something." >&2
+        'service $apache_service restart' command or something." >&2
 }
 
-# this function will stop gitlab's nginx
-stop_nginx() {
-    "$gitlab_sv_ctl" stop nginx > /dev/null || {
-        error "There were some error during stopping the gitlab' nginx."
-        fix_nginx_message
+# this function will start the apache
+start_apache() {
+    service "$apache_service" start > /dev/null || {
+        error "There were some error during starting the apache."
+        fix_apache_message
         cleanup
         exit 3
     }
 }
 
-# and another one to start it
-start_nginx() {
-    "$gitlab_sv_ctl" start nginx > /dev/null || {
-        error "There were some error during starting the gitlab' nginx."
-        fix_nginx_message
+# and another one to stop it
+stop_apache() {
+    service "$apache_service" stop > /dev/null || {
+        error "There were some error during stopping the apache."
+        fix_apache_message
         cleanup
         exit 3
     }
 }
+
+# and another one to reload it
+reload_apache() {
+    service "$apache_service" reload > /dev/null || {
+        error "There were some error during reloading the apache."
+        fix_apache_message
+        cleanup
+        exit 5
+    }
+}
+
 
 # --------------------------------------------------------------------
 # -- Usage -----------------------------------------------------------
@@ -161,8 +174,8 @@ executable_file "$letsencrypt" || {
     exit 2
 }
 
-readable_file "$gitlab_key" || {
-    error "Private key '$gitlab_key' isn't readable file."
+readable_file "$apache_key" || {
+    error "Private key '$apache_key' isn't readable file."
     exit 2
 }
 
@@ -193,25 +206,24 @@ echo "$openssl_config" > "$openssl_config_file"
 openssl req -new -nodes -sha256 -outform der \
     -config "$openssl_config_file" \
     -subj "$cert_subject" \
-    -key "$gitlab_key" \
+    -key "$apache_key" \
     -out "$request_file" || {
     error "Cannot create the certificate signing request."
     cleanup
     exit 3
 }
 
-# release the 443 port -- stop gitlab' nginx
-# TODO this nginx is not listening at 443
-#stop_nginx
+# release the 443 port -- stop the apache
+stop_apache
 
 # ----------------------------------------------------------
 # letsencrypt utility stores the obtained certificates in PWD,
 # so we must cd in the temp directory
 cd "$temp_dir"
 
-"$letsencrypt" certonly --csr "$request_file" > /dev/null || {
+"$letsencrypt" certonly --csr "$request_file" --standalone > /dev/null || {
     error "The certificate cannot be obtained with '$letsencrypt' tool."
-    start_nginx
+    start_apache
     cleanup
     exit 4
 }
@@ -220,9 +232,8 @@ cd "$temp_dir"
 cd - > /dev/null
 # ----------------------------------------------------------
 
-# start Zimbra' nginx again
-# TODO this nginx is not listening at 443 and wasn't stopped
-#start_nginx
+# start the apache again
+start_apache
 
 
 # --------------------------------------------------------------------
@@ -247,40 +258,36 @@ readable_file "$intermediate_CA_file" || {
 
 # # create one CA chain file
 # cat "$root_CA_file" "$intermediate_CA_file" > "$chain_file"
-# create one cert with  chain file
-cat "$cert_file" "$intermediate_CA_file" > "$chain_file"
+# # create one cert with  chain file
+# cat "$cert_file" "$intermediate_CA_file" > "$chain_file"
+# CA file for apache will be just the intermediate cert file
+cp "$intermediate_CA_file" "$chain_file"
 
-# # verify it with Zimbra tool
-# "$zmcertmgr" verifycrt comm "$zimbra_key" "$cert_file" "$chain_file" > /dev/null || {
-#     error "Verification of the issued certificate with '$zmcertmgr' failed."
-#     exit 4
-# }
-
-# # install the certificate to Zimbra
-# "$zmcertmgr" deploycrt comm "$cert_file" "$chain_file" > /dev/null || {
-#     error "Installation of the issued certificate with '$zmcertmgr' failed."
-#     exit 4
-# }
-
-
-# install the certificate to gitlab -- simply copy the file on the place
+# install the certificate to apache -- simply copy the file on the place
 # keep one last certificate in ssl_dir
-mv "$gitlab_cert" "$gitlab_cert-bak" || {
-    error "Cannot backup (move) the old certificate '$gitlab_cert'."
+mv "$apache_cert" "$apache_cert-bak" || {
+    error "Cannot backup (move) the old certificate '$apache_cert'."
     exit 4
 }
 # replace it with the new issued certificate
-mv "$chain_file" "$gitlab_cert" || {
-    error "Installation of the issued certificate with '$zmcertmgr' failed."
+mv "$cert_file" "$apache_cert" || {
+    error "Cannot move new certificate to a file '$apache_cert'."
+    exit 4
+}
+# keep one last chain in ssl_dir
+mv "$apache_chain" "$apache_chain-bak" || {
+    error "Cannot backup (move) the old certificate chain '$apache_chain'."
+    exit 4
+}
+# replace it with the new issued certificate
+mv "$chain_file" "$apache_chain" || {
+    error "Cannot move new certificate chain to a file '$apache_cert'."
     exit 4
 }
 
 
-# finally, restart the gitlab
-"$gitlab_ctl" restart > /dev/null || {
-    error "Restarting gitlab services failed."
-    exit 5
-}
+# finally, reload the apache to load new certificate
+reload_apache
 
 
 # --------------------------------------------------------------------
