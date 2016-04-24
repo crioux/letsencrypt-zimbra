@@ -51,7 +51,7 @@ zimbra_ssl_dir="${zimbra_dir}/ssl/zimbra/commercial"
 zimbra_key="${zimbra_ssl_dir}/commercial.key"
 
 # common name in the certificate
-CN="mail.theajty.com"
+CN="mail.phooji.com"
 # subject in request -- does not matter for letsencrypt but must be there for openssl
 cert_subject="/"
 # openssl config skeleton
@@ -119,7 +119,7 @@ fix_nginx_message() {
 
 # this function will stop Zimbra's nginx
 stop_nginx() {
-    su -c 'zmproxyctl stop; zmmailboxdctl stop' - "$zimbra_user" > /dev/null || {
+    su -c 'zmproxyctl stop; zmmailboxdctl stop' - "$zimbra_user" || {
         error "There were some error during stopping the Zimbra' nginx."
         fix_nginx_message
         cleanup
@@ -129,7 +129,7 @@ stop_nginx() {
 
 # and another one to start it
 start_nginx() {
-    su -c 'zmproxyctl start; zmmailboxdctl start' - "$zimbra_user" > /dev/null || {
+    su -c 'zmproxyctl start; zmmailboxdctl start' - "$zimbra_user" || {
         error "There were some error during starting the Zimbra' nginx."
         fix_nginx_message
         cleanup
@@ -215,7 +215,7 @@ stop_nginx
 # so we must cd in the temp directory
 cd "$temp_dir"
 
-"$letsencrypt" certonly --csr "$request_file" > /dev/null || {
+"$letsencrypt" certonly --standalone --csr "$request_file" || {
     error "The certificate cannot be obtained with '$letsencrypt' tool."
     start_nginx
     cleanup
@@ -223,7 +223,7 @@ cd "$temp_dir"
 }
 
 # cd back -- which is not really neccessarry
-cd - > /dev/null
+cd - 
 # ----------------------------------------------------------
 
 # start Zimbra' nginx again
@@ -254,20 +254,20 @@ readable_file "$intermediate_CA_file" || {
 cat "$root_CA_file" "$intermediate_CA_file" > "$chain_file"
 
 # verify it with Zimbra tool
-"$zmcertmgr" verifycrt comm "$zimbra_key" "$cert_file" "$chain_file" > /dev/null || {
+"$zmcertmgr" verifycrt comm "$zimbra_key" "$cert_file" "$chain_file" || {
     error "Verification of the issued certificate with '$zmcertmgr' failed."
     exit 4
 }
 
 # install the certificate to Zimbra
-"$zmcertmgr" deploycrt comm "$cert_file" "$chain_file" > /dev/null || {
+"$zmcertmgr" deploycrt comm "$cert_file" "$chain_file" || {
     error "Installation of the issued certificate with '$zmcertmgr' failed."
     exit 4
 }
 
 
 # finally, restart the Zimbra
-service "$zimbra_service" restart > /dev/null || {
+service "$zimbra_service" restart || {
     error "Restarting zimbra service failed."
     exit 5
 }
